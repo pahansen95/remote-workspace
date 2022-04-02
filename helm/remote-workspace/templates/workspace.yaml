@@ -1,0 +1,124 @@
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: {{ include "name.full" . | quote }}
+  name: {{ include "name.short" . | printf "%s-workspace" | quote }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "name.full" . | quote }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "name.full" . | quote }}
+    spec:
+      serviceAccountName: {{ include "name.serviceAccount" . | quote }}
+      containers:
+      - image: {{ include "cntr.image.uri" . | quote }}
+        name: {{ include "name.short" . | printf "%s-workspace" | quote }}
+        resources:
+          requests:
+            cpu: {{ .Values.container.resources.cpu }}
+            memory: {{ .Values.container.resources.mem }}
+        envFrom:
+        - configMapRef:
+            name: {{ include "name.short" . | printf "%s-workspace-env-cfgmap" | quote }}
+            optional: yes
+        ports:
+        - name: ssh
+          protocol: TCP
+          containerPort: 22
+        volumeMounts:
+        - name: workspace-folder
+          mountPath: {{ .Values.container.mounts.workspace }}
+        - name: ssh-user-config
+          mountPath: /home/vscode/.ssh
+        - name: ssh-user-keys
+          mountPath: /home/vscode/.ssh
+        - name: sshd-priv-key
+          mountPath: {{ .Values.container.mounts.sshd }}
+        - name: sshd-pub-key
+          mountPath: {{ .Values.container.mounts.sshd }}
+        - name: sshd-config
+          mountPath: {{ .Values.container.mounts.sshd }}
+      volumes:
+      - name: workspace-folder
+        persistentVolumeClaim:
+          claimName: {{ include "name.short" . | printf "%s-workspace-folder-data" | quote }}
+      - name: ssh-user-config
+        configMap:
+          name: {{ include "name.short" . | printf "%s-workspace-ssh-config" | quote }}
+          defaultMode: 0o400
+      - name: ssh-user-keys
+        secret:
+          secretName: {{ include "name.short" . | printf "%s-ssh-user-keys" | quote }}
+          defaultMode: 0o400
+      - name: sshd-priv-key
+        secret:
+          secretName: {{ include "name.short" . | printf "%s-sshd-priv-key" | quote }}
+          defaultMode: 0o400
+          optional: no
+      - name: sshd-pub-key
+        configMap:
+          name: {{ include "name.short" . | printf "%s-sshd-pub-key" | quote }}
+          defaultMode: 0o444
+          optional: no
+      - name: sshd-config
+        configMap:
+          name: {{ include "name.short" . | printf "%s-sshd-config" | quote }}
+          defaultMode: 0o444
+          optional: no
+---
+# Workspace Folder PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "name.short" . | printf "%s-workspace-folder-data" | quote }}
+  annotations:
+    # Instruct Helm Not to uninstall this resource (it will become orphaned)
+    #   We do this to ensure data is not accidently deleted
+    "helm.sh/resource-policy": keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.container.pvcs.workspace.size }}
+  storageClassName: {{ .Values.container.pvcs.workspace.storageClass }}
+---
+# Environment Variables ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: {{ include "name.full" . | quote }}
+  name: {{ include "name.short" . | printf "%s-workspace-env-cfgmap" | quote }}
+data: {{ .Values.workspace.env }}
+---
+# User Configured Secrets
+---
+# SSH Client Config
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: {{ include "name.full" . | quote }}
+  name: {{ include "name.short" . | printf "%s-workspace-ssh-config" | quote }}
+data: 
+  config: |
+{{ .Values.workspace.ssh.config | indent 4 }}
+---
+# SSH Client Keys
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app: {{ include "name.full" . | quote }}
+  name: {{ include "name.short" . | printf "%s-ssh-user-keys" | quote }}
+type: kubernetes.io/ssh-auth
+data:
+{{ .Values.workspace.ssh.keys | toYaml | indent 2 }}

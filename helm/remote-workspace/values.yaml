@@ -1,0 +1,67 @@
+### YAML Anchors ###
+
+_k8s_provider:
+  name: 
+    full: &k8s_fname digital-ocean
+    short: &k8s_sname do
+  storageClass: &k8s_storageClass do-block-storage
+
+### Start Values ###
+
+workspace:
+  # remote:
+  #   ssh: "git@gitlab.com:pahansen95/eap-proxy.git"
+  #   ref: main
+  env:
+    FOO: BAR
+  ssh:
+    config: |
+      # SSH Client Config
+
+      ### Global Config ###
+      Compression yes
+      PasswordAuthentication no
+      PubkeyAuthentication yes
+      UpdateHostKeys yes
+
+      ### Hosts ###
+      Host github.com
+        AddKeysToAgent yes
+        IdentityFile ~/.ssh/gitlab.com
+      Host github.com
+        AddKeysToAgent yes
+        IdentityFile ~/.ssh/github.com
+    keys:
+      "gitlab.com": |
+        TODO
+      "github.com": |
+        TODO
+
+container:
+  mounts:
+    workspace: /home/vscode/workspace
+    sshd: /etc/ssh
+  pvcs:
+    workspace:
+      size: 8Gi
+      storageClass: *k8s_storageClass
+  image:
+    registry: gitlab.com
+    path: pahansen95/remote-workspace
+    tag: latest
+    username:
+    password:
+  resources:
+    cpu: 512m
+    mem: 1Gi
+
+services:
+  ssh:
+    keyPair:
+      pub: "UPDATE ME"
+      priv: "UPDATE ME"
+
+# Optional Values
+
+##Overrides the Name of the Installed release to this value
+# name:
