@@ -28,7 +28,7 @@
 set -Eeuo pipefail
 ### Global Variables
 declare CONTEXT UUID TEMP_DIR
-CONTEXT="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)"
+CONTEXT="$(readlink -f "${BASH_SOURCE[0]}")"; CONTEXT="${CONTEXT%/*}"
 UUID="$(uuidgen || uuid -v4 || cat /proc/sys/kernel/random/uuid || od -x /dev/urandom | head -1 | awk '{OFS="-"; print $2$3,$4,$5,$6,$7$8$9}' || echo -n 'cd259b1d-9164-d4aa-fdc5-39a6b894ee19')"
 TEMP_DIR="${TMPDIR:-/tmp}/${UUID}"; mkdir -p "$TEMP_DIR"; trap "rm -rf '${TEMP_DIR}'" EXIT
 declare -A OS PROC
