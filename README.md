@@ -1,5 +1,34 @@
 # Remote Workspaces PoC
 
+## QuickStart
+
+```bash
+# Create a git project to maintain all your remote workspaces
+declare \
+	gitops_dir="${HOME}/Documents/Repositories/homelab-gitops/"
+mkdir -p "${gitops_dir}"
+cd "${gitops_dir}"
+git init .
+
+# Export ENV Vars
+export KUBECONFIG="${gitops_dir}/.cache/kubeconfig"
+# See the values.yaml file for the registry in use
+export CONTAINER_REGISTRY_USERNAME="..."
+export CONTAINER_REGISTRY_PASSWORD="..."
+export USER_SSH_KEY="${HOME}/.ssh/dev"
+export USER_SSH_PUB_KEY="${HOME}/.ssh/dev.pub"
+
+# Build Up a Remote Workspace
+remote-workspace.sh --log-level info \
+	up \
+		"git@gitlab.com:pahansen95/eap-proxy.git"
+
+# Tear Down a Remote Workspace (Doesn't Delete Workspace Data)
+remote-workspace.sh --log-level info \
+	down \
+		"git@gitlab.com:pahansen95/eap-proxy.git"
+```
+
 ## Goal
 
 PoC to build remote Ephemeral (Dev, Ops, etc...) Workspaces in a Kubernetes cluster.

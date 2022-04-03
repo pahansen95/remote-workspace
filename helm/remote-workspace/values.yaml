@@ -12,9 +12,9 @@ workspace:
   # remote:
   #   ssh: "git@gitlab.com:pahansen95/eap-proxy.git"
   #   ref: main
-  env:
-    FOO: BAR
+  env: {}
   ssh:
+    authorizedKeys: []
     config: |
       # SSH Client Config
 
@@ -25,41 +25,39 @@ workspace:
       UpdateHostKeys yes
 
       ### Hosts ###
-      Host github.com
+      Host gitlab.com
         AddKeysToAgent yes
         IdentityFile ~/.ssh/gitlab.com
       Host github.com
         AddKeysToAgent yes
         IdentityFile ~/.ssh/github.com
     keys:
-      "gitlab.com": |
-        TODO
-      "github.com": |
-        TODO
+      "gitlab.com": ""
+      "github.com": ""
 
 container:
   mounts:
     workspace: /home/vscode/workspace
-    sshd: /etc/ssh
+    sshd: /home/vscode/.sshd
   pvcs:
     workspace:
       size: 8Gi
       storageClass: *k8s_storageClass
   image:
-    registry: gitlab.com
-    path: pahansen95/remote-workspace
+    registry: registry.digitalocean.com
+    path: d1144b94-0905-4b0d-8784-a56bbe41a51b/remote-workspace
     tag: latest
-    username:
-    password:
+    username: ""
+    password: ""
   resources:
-    cpu: 512m
-    mem: 1Gi
+    cpu: 4000m
+    mem: 16Gi
 
 services:
   ssh:
     keyPair:
-      pub: "UPDATE ME"
-      priv: "UPDATE ME"
+      pub: ""
+      priv: ""
 
 # Optional Values
 

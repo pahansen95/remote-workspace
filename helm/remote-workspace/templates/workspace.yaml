@@ -11,67 +11,100 @@ spec:
   selector:
     matchLabels:
       app: {{ include "name.full" . | quote }}
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
         app: {{ include "name.full" . | quote }}
     spec:
       serviceAccountName: {{ include "name.serviceAccount" . | quote }}
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
       containers:
       - image: {{ include "cntr.image.uri" . | quote }}
         name: {{ include "name.short" . | printf "%s-workspace" | quote }}
+        args: ["--log-level", "trace"]
         resources:
           requests:
+            cpu: 256m
+            memory: 512Mi
+          limits:
             cpu: {{ .Values.container.resources.cpu }}
             memory: {{ .Values.container.resources.mem }}
         envFrom:
         - configMapRef:
             name: {{ include "name.short" . | printf "%s-workspace-env-cfgmap" | quote }}
             optional: yes
+        env:
+        - name: SSHD_CONFIG
+          value: {{ printf "%s/sshd_config" .Values.container.mounts.sshd | quote }}
         ports:
         - name: ssh
           protocol: TCP
-          containerPort: 22
+          containerPort: 8022
         volumeMounts:
         - name: workspace-folder
           mountPath: {{ .Values.container.mounts.workspace }}
-        - name: ssh-user-config
-          mountPath: /home/vscode/.ssh
-        - name: ssh-user-keys
-          mountPath: /home/vscode/.ssh
-        - name: sshd-priv-key
-          mountPath: {{ .Values.container.mounts.sshd }}
-        - name: sshd-pub-key
-          mountPath: {{ .Values.container.mounts.sshd }}
-        - name: sshd-config
-          mountPath: {{ .Values.container.mounts.sshd }}
+        # - name: ssh-data
+        #   mountPath: /home/vscode/.ssh
+        - name: ssh-data
+          mountPath: /home/vscode/.ssh/config
+          subPath: config
+        - name: ssh-data
+          mountPath: /home/vscode/.ssh/authorized_keys
+          subPath: authorized_keys
+        {{- range $key, $val := .Values.workspace.ssh.keys }}
+        - name: ssh-data
+          mountPath: {{ printf "/home/vscode/.ssh/%s" $key }}
+          subPath: {{ $key }}
+        {{- end }}
+        # - name: sshd-data
+        #   mountPath: {{ .Values.container.mounts.sshd }}
+        - name: sshd-data
+          mountPath: {{ printf "%s/%s" .Values.container.mounts.sshd "sshd_config" }}
+          subPath: "sshd_config"
+        - name: sshd-data
+          mountPath: {{ printf "%s/%s" .Values.container.mounts.sshd "id_ed25519" }}
+          subPath: "id_ed25519"
+        - name: sshd-data
+          mountPath: {{ printf "%s/%s" .Values.container.mounts.sshd "id_ed25519.pub" }}
+          subPath: "id_ed25519.pub"
       volumes:
       - name: workspace-folder
         persistentVolumeClaim:
           claimName: {{ include "name.short" . | printf "%s-workspace-folder-data" | quote }}
-      - name: ssh-user-config
-        configMap:
-          name: {{ include "name.short" . | printf "%s-workspace-ssh-config" | quote }}
+      - name: sshd-data
+        projected:
           defaultMode: 0o400
-      - name: ssh-user-keys
-        secret:
-          secretName: {{ include "name.short" . | printf "%s-ssh-user-keys" | quote }}
+          sources:
+          # Private Key
+          - secret:
+              name: {{ include "name.short" . | printf "%s-sshd-priv-key" | quote }}
+              optional: no
+          # Public Key
+          - configMap:
+              name: {{ include "name.short" . | printf "%s-sshd-pub-key" | quote }}
+              optional: no
+          # Config
+          - configMap:
+              name: {{ include "name.short" . | printf "%s-sshd-config" | quote }}
+              optional: no
+      - name: ssh-data
+        projected:
           defaultMode: 0o400
-      - name: sshd-priv-key
-        secret:
-          secretName: {{ include "name.short" . | printf "%s-sshd-priv-key" | quote }}
-          defaultMode: 0o400
-          optional: no
-      - name: sshd-pub-key
-        configMap:
-          name: {{ include "name.short" . | printf "%s-sshd-pub-key" | quote }}
-          defaultMode: 0o444
-          optional: no
-      - name: sshd-config
-        configMap:
-          name: {{ include "name.short" . | printf "%s-sshd-config" | quote }}
-          defaultMode: 0o444
-          optional: no
+          sources:
+          # SSH User Keys
+          - secret:
+              name: {{ include "name.short" . | printf "%s-ssh-user-keys" | quote }}
+          # SSH Config
+          - configMap:
+              name: {{ include "name.short" . | printf "%s-workspace-ssh-config" | quote }}
+          # SSH Authorized Keys
+          - configMap:
+              name: {{ include "name.short" . | printf "%s-workspace-ssh-authorized-keys" | quote }}
 ---
 # Workspace Folder PVC
 apiVersion: v1
@@ -97,7 +130,8 @@ metadata:
   labels:
     app: {{ include "name.full" . | quote }}
   name: {{ include "name.short" . | printf "%s-workspace-env-cfgmap" | quote }}
-data: {{ .Values.workspace.env }}
+data: 
+{{ .Values.workspace.env | toYaml | indent 2 }}
 ---
 # User Configured Secrets
 ---
@@ -119,6 +153,22 @@ metadata:
   labels:
     app: {{ include "name.full" . | quote }}
   name: {{ include "name.short" . | printf "%s-ssh-user-keys" | quote }}
-type: kubernetes.io/ssh-auth
+type: Opaque
 data:
-{{ .Values.workspace.ssh.keys | toYaml | indent 2 }}
+{{- range $key, $val := .Values.workspace.ssh.keys }}
+  {{ quote $key }}: {{ include "ssh.key" $val | b64enc }}
+{{ end -}}
+---
+# SSH Authorized Keys
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: {{ include "name.full" . | quote }}
+  name: {{ include "name.short" . | printf "%s-workspace-ssh-authorized-keys" | quote }}
+data: 
+  authorized_keys: |
+{{- range $i, $val := .Values.workspace.ssh.authorizedKeys }}
+{{ $val | trim | indent 4 }}
+{{ end }}
+

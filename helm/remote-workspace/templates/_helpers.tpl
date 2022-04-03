@@ -5,16 +5,24 @@
 */}}
 
 {{- define "name.full" -}}
-{{- default .Chart.Name .Values.name | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{- define "name.short" -}}
-{{- include "name.full" . | trunc 8 | trimSuffix "-" -}}
+{{- .Release.Name | trunc 32 | trimSuffix "-" -}}
 {{- end -}}
 
 {{- define "name.serviceAccount" -}}
-{{- include "name.short" . | printf "%s-sa" -}}
+{{- include "name.short" . | printf "%s-svcacc" -}}
 {{- end -}}
+
+{{/*
+*
+* White Space Control
+*
+*/}}
+
+{{ define "ssh.key" }}{{ trim . | printf "%s\n" }}{{ end }}
 
 {{/*
 *

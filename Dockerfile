@@ -35,9 +35,11 @@ RUN \
     docker
 
 COPY --chown=vscode:vscode ./entrypoint.sh /home/vscode/entrypoint.sh
-RUN chmod +x /home/vscode/entrypoint.sh
+RUN \
+  chmod +x /home/vscode/entrypoint.sh && \
+  mkdir -p /home/vscode/.sshd /home/vscode/.ssh
 
-WORKDIR /home/vscode/workspace
+WORKDIR /home/vscode
 
-ENTRYPOINT [ "./entrypoint.sh" ]
-CMD [ "--log-level", "INFO" ]
+ENTRYPOINT [ "/home/vscode/entrypoint.sh" ]
+CMD [ "--log-level", "info" ]

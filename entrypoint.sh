@@ -165,36 +165,46 @@ info "$script_info"
 check_env \
   SSHD_CONFIG
 
-# Start the SSHD Service
-coproc SSH_SERVER {
-  declare time_to_quit=0
-  trap "declare -g time_to_quit=1" QUIT
-  while [[ "${time_to_quit}" -eq 0 ]]; do
-    sudo sshd \
-      -f "${SSHD_CONFIG}" \
-      -D \
-      -e
-    warn "SSH Server exit on '$?'"
-  done
-}
+trace "${SSHD_CONFIG}:\n$(< "${SSHD_CONFIG}")"
 
-declare \
-  time_to_quit=0 \
-  sshd_pid="${SSH_SERVER_PID}"
+exec "$(command -v sshd)" \
+  -f "${SSHD_CONFIG}" \
+  -D \
+  -e
 
-{
-  sleep infinity
-} &
+# declare \
+#   time_to_quit \
+#   sshd_pid
 
-declare \
-  time_to_quit
+# # Start the SSHD Service
+# {
+#   declare time_to_quit=0
+#   trap "declare -g time_to_quit=1" QUIT
+#   trace "${SSHD_CONFIG}"
+#   while [[ "${time_to_quit}" -eq 0 ]]; do
+#     "$(command -v sshd)" \
+#       -f "${SSHD_CONFIG}" \
+#       -D \
+#       -e
+#     warn "SSH Server exit on '$?'"
+#   done
+# } &
 
-time_to_quit="$(jobs -p %%)"
+# sshd_pid="$(jobs -p %%)"
 
-trap "declare -g time_to_quit; kill -INT ${time_to_quit}" INT TERM QUIT
+# {
+#   sleep infinity
+# } &
 
-wait -f "${time_to_quit}"
+# declare \
+#   time_to_quit
 
-kill -QUIT "${sshd_pid}"
-kill -INT "${sshd_pid}"
-wait -f "${sshd_pid}"
+# time_to_quit="$(jobs -p %%)"
+
+# trap "declare -g time_to_quit; kill -INT ${time_to_quit}" INT TERM QUIT
+
+# wait -f "${time_to_quit}"
+
+# kill -QUIT "${sshd_pid}"
+# kill -INT "${sshd_pid}"
+# wait -f "${sshd_pid}"

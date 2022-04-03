@@ -6,9 +6,9 @@ metadata:
   labels:
     app: {{ include "name.full" . | quote }}
   name: {{ include "name.short" . | printf "%s-sshd-priv-key" | quote }}
-type: kubernetes.io/ssh-auth
+type: Opaque
 data:
-  id_ed25519: {{ b64enc .Values.services.ssh.keyPair.priv }}
+  id_ed25519: {{ include "ssh.key" .Values.services.ssh.keyPair.priv | b64enc }}
 ---
 # SSH Server Public Key
 apiVersion: v1
@@ -31,19 +31,21 @@ metadata:
 data:
   sshd_config: |
     # OpenSSH Server Config File
-    LogLevel ERROR
-    AuthorizedKeysFile %h/.ssh/authorized_keys
+    LogLevel DEBUG3
+    ListenAddress 0.0.0.0:8022
+    AuthorizedKeysFile /home/vscode/.ssh/authorized_keys
     CASignatureAlgorithms ssh-ed25519,sk-ssh-ed25519@openssh.com
     ClientAliveCountMax 5
     ClientAliveInterval 60
     Compression yes
     DenyGroups !vscode
-    DisableForwarding yes
+    # DisableForwarding yes
     HostKey {{ .Values.container.mounts.sshd }}/id_ed25519
     HostKeyAlgorithms ssh-ed25519-cert-v01@openssh.com,sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519,sk-ssh-ed25519@openssh.com
     PasswordAuthentication no
     PermitEmptyPasswords no
     PermitRootLogin no
+    PidFile {{ .Values.container.mounts.sshd }}/sshd.pid
     PubkeyAuthentication yes
     PubkeyAcceptedKeyTypes ssh-ed25519-cert-v01@openssh.com,sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519,sk-ssh-ed25519@openssh.com
     Subsystem sftp internal-sftp
