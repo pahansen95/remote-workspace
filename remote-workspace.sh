@@ -36,7 +36,7 @@ OS["name"]="$(uname -s)"
 OS["release"]="$(uname -r)"
 OS["arch"]="$(uname -m)"
 PROC["pid"]="$$"
-PROC["ppid"]="$(awk '/PPid/ { print $2 }' "/proc/$$/status" || echo -n -1)"
+PROC["ppid"]="$(awk '/PPid/ { print $2 }' "/proc/$$/status" 2> /dev/null || echo -n -1)"
 PROC["version"]="${BASH_VERSION}"
 PROC["path"]="$(which bash)"
 PROC["script"]="${BASH_SOURCE[0]}"
@@ -162,25 +162,7 @@ info "$script_info"
 #### SCRIPT LOGIC BELOW ####
 ############################
 
-generate_values() {
-  :
-}
-
 ### Start Main Logic ###
-
-check_dep \
-  kubectl \
-  helm \
-  docker \
-  code \
-  ssh-keygen
-
-check_env \
-  KUBECONFIG \
-  CONTAINER_REGISTRY_USERNAME \
-  CONTAINER_REGISTRY_PASSWORD \
-  USER_SSH_KEY \
-  USER_SSH_PUB_KEY
 
 declare \
   WORKDIR="${PWD}"
@@ -194,210 +176,290 @@ done
 
 test -d "${WORKDIR}/.ssh/config.d" || mkdir -p "${WORKDIR}/.ssh/config.d"
 
-### Buildout the Workspace on the K8s Cluster
-if [[ "${args[0],,}" == "up" ]]; then
-  declare \
-    remote_project="${args[1]}" \
-    git_ref="${args[2]:-main}"
-  
-  # Get the path of the url & replace "/" with "-"
-  project_slug="${remote_project}"
-  project_slug="${project_slug#*:}"
-  project_slug="${project_slug%.*}"
-  project_slug="${project_slug//\//\-}"
-  trace "${project_slug}"
-  test -n "${project_slug}"
+case "${args[0],,}" in
+  "up" )
+    check_dep \
+      kubectl \
+      helm \
+      docker \
+      code \
+      ssh-keygen
 
-  declare \
-    namespace="${project_slug}" \
-    release_name="${project_slug}"
-  
-  # Connect to the K8s Cluster
-  trace "$(< "${KUBECONFIG}")"
-  kubectl cluster-info
-  kubectl config current-context
+    check_env \
+      KUBECONFIG \
+      CONTAINER_REGISTRY_USERNAME \
+      CONTAINER_REGISTRY_PASSWORD \
+      USER_SSH_KEY \
+      USER_SSH_PUB_KEY
 
-  # Generate a SSH Private/Pub Pair
-  if [[ ! -e "${WORKDIR}/.ssh/server_id_ed25519" ]]; then
-    ssh-keygen -t ed25519 -C "$(whoami || echo -n vscode)@remote-workspace" -N '' -f "${WORKDIR}/.ssh/server_id_ed25519"
-  fi
-  # Build the Values File
-  jq -n -c \
-    --arg userKey "$(< "${USER_SSH_PUB_KEY}")" \
-    --arg gitlabKey "$(< "${HOME}/.ssh/gitlab.com")" \
-    --arg githubKey "$(< "${HOME}/.ssh/gitlab.com")" \
-    --arg username "${CONTAINER_REGISTRY_USERNAME}" \
-    --arg password "${CONTAINER_REGISTRY_PASSWORD}" \
-    --arg serverPrivKey "$(< "${WORKDIR}/.ssh/server_id_ed25519")" \
-    --arg serverPubKey "$(< "${WORKDIR}/.ssh/server_id_ed25519.pub")" \
-    '{
-      workspace: {
-        ssh: {
-          authorizedKeys: [
-            $userKey
-          ],
-          keys: {
-            "gitlab.com": $gitlabKey,
-            "github.com": $githubKey,
-          }
-        }
-      },
-      container: {
-        image: {
-          username: $username,
-          password: $password,
-        }
-      },
-      services: {
-        ssh: {
-          keyPair: {
-            pub: $serverPubKey,
-            priv: $serverPrivKey,
-          }
-        }
-      }
-    }' | \
-  yq -P > "${TEMP_DIR}/values.yaml"
-  trace "$(< "${TEMP_DIR}/values.yaml")"
-  
-  # Deploy the Helm Chart w/ templated values
-  trace "helm install dry-run..."
-  trace "$(< <(helm install \
-    "${release_name}" \
-    "${CONTEXT}/helm/remote-workspace" \
-    --dry-run \
-    --debug \
-    --namespace "${namespace}" \
-    --values "${TEMP_DIR}/values.yaml"
-  ))"
-  info "Deploying Remote Workspace; this could take up to 5 minutes."
-  helm upgrade \
-    "${release_name}" \
-    "${CONTEXT}/helm/remote-workspace" \
-    --install \
-    --namespace "${namespace}" \
-    --create-namespace \
-    --values "${TEMP_DIR}/values.yaml" \
-    --atomic
-  
-  ### Setup the Remote Workspace
-
-  # Get the LoadBalancer IP
-  declare -a \
-    public_ip
-  declare \
-    remote_authority \
-    project_name \
-    project_addr
-
-  remote_authority="ssh-remote+${release_name}"
-  project_name="${remote_project}"
-  project_name="${project_name##*/}"
-  project_name="${project_name%.*}"
-  project_addr="${remote_project%:*}"
-  project_addr="${project_addr#*@}"
-  trace "project_name=${project_name}"
-  trace "project_addr=${project_addr}"
-  trace "remote_authority=${remote_authority}"
-  
-  public_ip=("$(kubectl -n "${namespace}" get service "${release_name}-workspace-ssh-svc" -o json | jq -r '.status.loadBalancer.ingress[].ip')")
-  trace "public_ip=[$(printf "'%s', " "${public_ip[@]}")]"
-  test "${#public_ip[@]}" -gt 0
+    ### Buildout the Workspace on the K8s Cluster
+    declare \
+      remote_project="${args[1]}" \
+      git_ref="${args[2]:-main}"
     
-  ssh -i "${USER_SSH_KEY}" "vscode@${public_ip[0]}" bash < <(echo "
-    set -xEeuo pipefail
-    cd '/home/vscode/workspace'
-    if [[ ! -d '${project_name}' ]]; then
-      ssh-keyscan -H '${project_addr}' >> ~/.ssh/known_hosts
-      ssh -T '${remote_project%:*}'
-      git clone \
-        -b '${git_ref}' \
-        '${remote_project}'
-    else
-      echo '/home/vscode/workspace/${project_name} already found so skip clone' >&2
+    # Get the path of the url & replace "/" with "-"
+    project_slug="${remote_project}"
+    project_slug="${project_slug#*:}"
+    project_slug="${project_slug%.*}"
+    project_slug="${project_slug//\//\-}"
+    trace "${project_slug}"
+    test -n "${project_slug}"
+
+    declare \
+      namespace="${project_slug}" \
+      release_name="${project_slug}"
+    
+    # Connect to the K8s Cluster
+    trace "$(< "${KUBECONFIG}")"
+    kubectl cluster-info
+    kubectl config current-context
+
+    # Generate a SSH Private/Pub Pair
+    if [[ ! -e "${WORKDIR}/.ssh/server_id_ed25519" ]]; then
+      ssh-keygen -t ed25519 -C "$(whoami || printf vscode)@remote-workspace" -N '' -f "${WORKDIR}/.ssh/server_id_ed25519"
     fi
-  ")
-
-  # Add the Remote Host to the SSH config  
-  # if ! grep -qEe "^${ssh_header}$" "${WORKDIR}/.ssh/config"; then
-  if [[ ! -f "${WORKDIR}/.ssh/config.d/${release_name}" ]]; then
-    echo -n "\
-Host ${release_name}
-  Hostname ${public_ip[0]}
-  User vscode
-  IdentityFile ${USER_SSH_KEY}" \
-    >> "${WORKDIR}/.ssh/config.d/${release_name}"
-  fi
-
-  # Add this Config to the Users Config
-  declare \
-    include_line="Include ${WORKDIR}/.ssh/config.d/*"
-  
-  if ! grep -qEe "^${include_line}$" "${HOME}/.ssh/config"; then
-    if [[ ! -f "${HOME}/.ssh/config.MASTER.BACKUP" ]]; then
-      cp "${HOME}/.ssh/config" "${HOME}/.ssh/config.MASTER.BACKUP"
-      chmod ug+r,a-wx "${HOME}/.ssh/config.MASTER.BACKUP"
-      success "Master Backup of Users's SSH Settings has been saved to '${HOME}/.ssh/config.MASTER.BACKUP'"
-    fi
-    cp "${HOME}/.ssh/config" "${HOME}/.ssh/config.BACKUP"
-    trap 'mv "${HOME}/.ssh/config.BACKUP" "${HOME}/.ssh/config"' ERR
-    trap 'success "Master backup of User SSH Config found at ${HOME}/.ssh/config.MASTER.BACKUP"' ERR
-    trap 'rm "${HOME}/.ssh/config.BACKUP"' EXIT
-    {
-      # Header
-      printf '%s\n' \
-        "${include_line}"
-      
-      # Body
-      cat "${HOME}/.ssh/config.BACKUP"
-    } >  "${HOME}/.ssh/config"
-  fi
-
-  ### Build the VsCode Workspace File ###
-  jq -n \
-    --arg remoteAuthority "${remote_authority}" \
-    --arg workspaceUri "vscode-remote://${remote_authority}/home/vscode/workspace" \
-    '{
-      folders: [
-        {
-          uri: $workspaceUri
+    # Build the Values File
+    jq -n -c \
+      --arg userKey "$(< "${USER_SSH_PUB_KEY}")" \
+      --arg gitlabKey "$(< "${HOME}/.ssh/gitlab.com")" \
+      --arg githubKey "$(< "${HOME}/.ssh/gitlab.com")" \
+      --arg username "${CONTAINER_REGISTRY_USERNAME}" \
+      --arg password "${CONTAINER_REGISTRY_PASSWORD}" \
+      --arg serverPrivKey "$(< "${WORKDIR}/.ssh/server_id_ed25519")" \
+      --arg serverPubKey "$(< "${WORKDIR}/.ssh/server_id_ed25519.pub")" \
+      '{
+        workspace: {
+          ssh: {
+            authorizedKeys: [
+              $userKey
+            ],
+            keys: {
+              "gitlab.com": $gitlabKey,
+              "github.com": $githubKey,
+            }
+          }
+        },
+        container: {
+          image: {
+            username: $username,
+            password: $password,
+          }
+        },
+        services: {
+          ssh: {
+            keyPair: {
+              pub: $serverPubKey,
+              priv: $serverPrivKey,
+            }
+          }
         }
-      ],
-      "remoteAuthority": $remoteAuthority,
-      settings: {}
-    }' \
-  > "${WORKDIR}/.cache/${release_name}.code-workspace"
+      }' | \
+    yq -P > "${TEMP_DIR}/values.yaml"
+    trace "$(< "${TEMP_DIR}/values.yaml")"
+    
+    # Deploy the Helm Chart w/ templated values
+    trace "helm install dry-run..."
+    trace "$(< <(helm install \
+      "${release_name}" \
+      "${CONTEXT}/helm/remote-workspace" \
+      --dry-run \
+      --debug \
+      --namespace "${namespace}" \
+      --values "${TEMP_DIR}/values.yaml"
+    ))"
+    info "Deploying Remote Workspace; this could take up to 15 minutes. Press Ctrl-C at any time to cancel."
+    helm upgrade \
+      "${release_name}" \
+      "${CONTEXT}/helm/remote-workspace" \
+      --install \
+      --namespace "${namespace}" \
+      --create-namespace \
+      --values "${TEMP_DIR}/values.yaml" \
+      --atomic \
+      --timeout 15m0s
+    
+    ### Setup the Remote Workspace
 
-  # Connect VsCode to the Remote Container
-  code "${WORKDIR}/.cache/${release_name}.code-workspace"  
-### Teardown the Workspace on the K8s Cluster
-elif [[ "${args[0],,}" == "down" ]]; then
-  declare \
-    remote_project="${args[1]}"
-  
-  # Get the path of the url & replace "/" with "-"
-  project_slug="${remote_project}"
-  project_slug="${project_slug#*:}"
-  project_slug="${project_slug%.*}"
-  project_slug="${project_slug//\//\-}"
-  trace "${project_slug}"
-  test -n "${project_slug}"
+    # Get the LoadBalancer IP
+    declare -a \
+      public_ip
+    declare \
+      remote_authority \
+      project_name \
+      project_addr
 
-  declare \
-    namespace="${project_slug}" \
-    release_name="${project_slug}"
+    remote_authority="ssh-remote+${release_name}"
+    project_name="${remote_project}"
+    project_name="${project_name##*/}"
+    project_name="${project_name%.*}"
+    project_addr="${remote_project%:*}"
+    project_addr="${project_addr#*@}"
+    trace "project_name=${project_name}"
+    trace "project_addr=${project_addr}"
+    trace "remote_authority=${remote_authority}"
+    
+    public_ip=("$(kubectl -n "${namespace}" get service "${release_name}-workspace-ssh-svc" -o json | jq -r '.status.loadBalancer.ingress[].ip')")
+    trace "public_ip=[$(printf "'%s', " "${public_ip[@]}")]"
+    test "${#public_ip[@]}" -gt 0
+    
+    if [[ ! -f "${HOME}/.ssh/known_hosts" ]]; then
+      : > "${HOME}/.ssh/known_hosts"
+    fi
+    for pub_ip in "${public_ip[@]}"; do
+      ssh-keyscan -H "${pub_ip}" >> "${HOME}/.ssh/known_hosts"
+      ssh -i "${USER_SSH_KEY}" "vscode@${pub_ip}" echo ping
+    done
+    ssh -i "${USER_SSH_KEY}" "vscode@${public_ip[0]}" bash < <(echo "
+      set -xEeuo pipefail
+      cd '/home/vscode/workspace'
+      if [[ ! -d '${project_name}' ]]; then
+        ssh-keyscan -H '${project_addr}' >> ~/.ssh/known_hosts
+        ssh -T '${remote_project%:*}'
+        git clone \
+          -b '${git_ref}' \
+          '${remote_project}'
+      else
+        echo '/home/vscode/workspace/${project_name} already found so skip clone' >&2
+      fi
+    ")
 
-  info "Uninstall Release ${release_name}"
-  helm uninstall \
-    "${release_name}" \
-    --namespace "${namespace}"
+    # Add the Remote Host to the SSH config  
+    if [[ ! -f "${WORKDIR}/.ssh/config.d/${release_name}" ]]; then
+      echo -n "\
+      Host ${release_name}
+        Hostname ${public_ip[0]}
+        User vscode
+        IdentityFile ${USER_SSH_KEY}" \
+      >> "${WORKDIR}/.ssh/config.d/${release_name}"
+    fi
 
-  info "Removing Old State Files"
-  rm \
-    "${WORKDIR}/.ssh/config.d/${release_name}" \
-    "${WORKDIR}/.cache/${release_name}.code-workspace" \
-  || true
-else
-  critical "Unknown Subcommand '${args[0]}'"
-  exit 1
-fi
+    # Add this Config to the Users Config
+    declare \
+      include_line="Include ${WORKDIR}/.ssh/config.d/*"
+    
+    trace "$(grep "${include_line}" "${HOME}/.ssh/config")"
+    if ! grep -q "${include_line}" "${HOME}/.ssh/config"; then
+      trace "Include line not found in users ssh config. Inserting."
+      if [[ ! -f "${HOME}/.ssh/config.MASTER.BACKUP" ]]; then
+        cp "${HOME}/.ssh/config" "${HOME}/.ssh/config.MASTER.BACKUP"
+        chmod ug+r,a-wx "${HOME}/.ssh/config.MASTER.BACKUP"
+        success "Master Backup of Users's SSH Settings has been saved to '${HOME}/.ssh/config.MASTER.BACKUP'"
+      fi
+      cp "${HOME}/.ssh/config" "${HOME}/.ssh/config.BACKUP"
+      trap 'mv "${HOME}/.ssh/config.BACKUP" "${HOME}/.ssh/config"' ERR
+      trap 'success "Master backup of User SSH Config found at ${HOME}/.ssh/config.MASTER.BACKUP"' ERR
+      trap 'rm "${HOME}/.ssh/config.BACKUP"' EXIT
+      {
+        # Header
+        printf '%s\n' \
+          "${include_line}"
+        
+        # Body
+        cat "${HOME}/.ssh/config.BACKUP"
+      } >  "${HOME}/.ssh/config"
+    fi
+
+    ### Build the VsCode Workspace File ###
+    jq -n \
+      --arg remoteAuthority "${remote_authority}" \
+      --arg workspaceUri "vscode-remote://${remote_authority}/home/vscode/workspace" \
+      '{
+        folders: [
+          {
+            uri: $workspaceUri
+          }
+        ],
+        "remoteAuthority": $remoteAuthority,
+        settings: {}
+      }' \
+    > "${WORKDIR}/.cache/${release_name}.code-workspace"
+    ;;
+  "down" )
+    check_dep \
+      kubectl \
+      helm
+
+    check_env \
+      KUBECONFIG
+
+    ### Teardown the Workspace on the K8s Cluster
+    declare \
+      remote_project="${args[1]}"
+    
+    # Get the path of the url & replace "/" with "-"
+    project_slug="${remote_project}"
+    project_slug="${project_slug#*:}"
+    project_slug="${project_slug%.*}"
+    project_slug="${project_slug//\//\-}"
+    trace "${project_slug}"
+    test -n "${project_slug}"
+
+    declare \
+      namespace="${project_slug}" \
+      release_name="${project_slug}"
+
+    info "Retrieve the LoadBalancer IP"
+    declare -a public_ip
+    public_ip=("$(kubectl -n "${namespace}" get service "${release_name}-workspace-ssh-svc" -o json | jq -r '.status.loadBalancer.ingress[].ip')")
+    trace "public_ip=[$(printf "'%s', " "${public_ip[@]}")]"
+    test "${#public_ip[@]}" -gt 0
+
+
+    info "Uninstall Release ${release_name}"
+    helm uninstall \
+      "${release_name}" \
+      --namespace "${namespace}" || true
+
+    info "Removing Old State Files"
+    rm \
+      "${WORKDIR}/.ssh/config.d/${release_name}" \
+      "${WORKDIR}/.cache/${release_name}.code-workspace" \
+    || true
+
+    info "Clean Up Known Hosts"
+    for pub_ip in "${public_ip[@]}"; do
+      ssh-keygen \
+        -R "${pub_ip}" \
+      || true
+    done
+    ;;
+  "list" )
+    ### List all of the currently available remote workspaces
+    echo "Currently Available Remote Workspaces"
+    for workspace in "${WORKDIR}/.cache/"*; do
+      if [[ "${workspace##*.}" == "code-workspace" ]]; then
+        declare workspace_file="${workspace##*/}"
+        printf "  - %s\n" "${workspace_file%.code-workspace}"
+      fi
+    done
+    ;;
+  "connect" )
+    check_dep \
+      code
+    if [[ -z "${args[1]:-}" ]]; then
+      critical "Must specify a workspace to connect to."
+      exit 1 
+    fi
+    declare workspace_file="${WORKDIR}/.cache/${args[1],,}.code-workspace"
+    if [[ ! -f "${workspace_file}" ]]; then
+      critical "Requested Workspace '${args[1],,}' not found"
+      critical "Use the 'connect' subcommand to list remote workspaces available in the current project."
+      exit 1
+    fi
+    # Connect VsCode to the Remote Container
+    info "Connecting Now"
+    if code "${workspace_file}"; then
+      success "Connected Successfully"
+    else
+      critical "Failed to Connect"
+      exit 1
+    fi
+    ;;
+  "help" ) 
+    usage
+    ;;
+  * )
+    critical "Unknown Subcommand '${args[0]}'"
+    exit 1
+    ;;
+esac
