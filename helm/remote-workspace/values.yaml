@@ -1,10 +1,10 @@
 ### YAML Anchors ###
 
-_k8s_provider:
-  name: 
-    full: &k8s_fname digital-ocean
-    short: &k8s_sname do
-  storageClass: &k8s_storageClass do-block-storage
+# _k8s_provider:
+#   name: 
+#     full: &k8s_fname digital-ocean
+#     short: &k8s_sname do
+#   storageClass: &k8s_storageClass do-block-storage
 
 ### Start Values ###
 
@@ -42,16 +42,19 @@ container:
   pvcs:
     workspace:
       size: 8Gi
-      storageClass: *k8s_storageClass
+      # storageClass: *k8s_storageClass
   image:
-    registry: registry.digitalocean.com
-    path: d1144b94-0905-4b0d-8784-a56bbe41a51b/remote-workspace
+    registry: registry.home.peterhansen.io
+    path: remote-workspace/workspace
     tag: latest
     username: ""
     password: ""
   resources:
     cpu: 4000m
     mem: 16Gi
+    gpu: 
+      nvidia: 0
+      amd: 0
 
 services:
   ssh:
