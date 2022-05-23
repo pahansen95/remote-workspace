@@ -34,6 +34,12 @@ spec:
           limits:
             cpu: {{ .Values.container.resources.cpu }}
             memory: {{ .Values.container.resources.mem }}
+          {{- if gt (.Values.container.resources.gpu.nvidia | int) 0 }}
+            nvidia.com/gpu: {{ .Values.container.resources.gpu.nvidia }}
+          {{- end }}
+          {{- if gt (.Values.container.resources.gpu.amd | int) 0 }}
+            amd.com/gpu: {{ .Values.container.resources.gpu.amd }}
+          {{- end }}
         envFrom:
         - configMapRef:
             name: {{ include "name.short" . | printf "%s-workspace-env-cfgmap" | quote }}
@@ -121,8 +127,11 @@ spec:
   resources:
     requests:
       storage: {{ .Values.container.pvcs.workspace.size }}
-  storageClassName: {{ .Values.container.pvcs.workspace.storageClass }}
+{{- with .Values.container.pvcs.workspace.storageClass }}
+  storageClassName: {{ . | quote }}
+{{- end }}
 ---
+{{- if .Values.workspace.env }}
 # Environment Variables ConfigMap
 apiVersion: v1
 kind: ConfigMap
@@ -132,6 +141,7 @@ metadata:
   name: {{ include "name.short" . | printf "%s-workspace-env-cfgmap" | quote }}
 data: 
 {{ .Values.workspace.env | toYaml | indent 2 }}
+{{- end }}
 ---
 # User Configured Secrets
 ---
