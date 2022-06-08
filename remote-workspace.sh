@@ -162,6 +162,244 @@ info "$script_info"
 #### SCRIPT LOGIC BELOW ####
 ############################
 
+find_config(){
+  local -n fn_config_file="$1"
+  fn_config_file="${WORKDIR}/config.yaml"
+  if [[ ! -f "${fn_config_file}" ]]; then
+    error "Config file '${fn_config_file}' doesn't exist"
+    return 1
+  fi
+}
+
+populate_list_from_json(){
+  # Notes:
+  #   key is optional
+  #
+  local -n \
+    fn_json \
+    fn_arr
+
+  local key
+
+  while [[ -n "${1:-}" ]]; do
+    case "${1%%=*}" in
+      key )
+        key="${1#*=}"
+        ;;
+      json )
+        fn_json="${1#*=}"
+        ;;
+      arr )
+        fn_arr="${1#*=}"
+        ;;
+      * )
+        error "Unknown kwarg passed '${1%%=*}'"
+        return 1
+        ;;
+    esac
+    shift
+  done
+  
+  readarray -t fn_arr < <(
+    # If a key is provided then iterate over the nested object
+    if [[ -n "${key:-}" ]]; then
+      jq -crn \
+        --arg "key" "${key}" \
+        --argjson "conf" "${fn_json}" \
+        '$conf[$key][]'
+    # If no Key is provided then iterate over the top level object
+    else
+      jq -crn \
+        --argjson "conf" "${fn_json}" \
+        '$conf[]'
+    fi
+  )
+}
+
+populate_map_from_json(){
+  # Notes:
+  #   key is optional
+  #
+  local -n \
+    fn_json \
+    fn_aarr
+
+  local key
+
+  while [[ -n "${1:-}" ]]; do
+    case "${1%%=*}" in
+      key )
+        key="${1#*=}"
+        ;;
+      json )
+        fn_json="${1#*=}"
+        ;;
+      aarr )
+        fn_aarr="${1#*=}"
+        ;;
+      * )
+        error "Unknown kwarg passed '${1%%=*}'"
+        return 1
+        ;;
+    esac
+    shift
+  done
+  
+  while read -r kv; do
+    fn_aarr+=(
+      ["${kv%%=*}"]="${kv#*=}"
+    )
+  done < <(
+    # If a key is provided then iterate over the nested object
+    if [[ -n "${key:-}" ]]; then
+      jq -rn \
+        --arg key "${key}" \
+        --argjson "conf" "${fn_json}" \
+        '$conf[$key] | to_entries[] | "\(.key)=\(.value)"'
+    # If no Key is provided then iterate over the top level object
+    else
+      jq -rn \
+        --argjson "conf" "${fn_json}" \
+        '$conf | to_entries[] | "\(.key)=\(.value)"'
+    fi
+  )
+}
+
+load_env(){
+  local -n \
+    fn_env_var
+  
+  local \
+    env_config_json
+
+  while [[ -n "${1:-}" ]]; do
+    case "${1%%=*}" in
+      var ) fn_env_var="${1#*=}";;
+      json ) env_config_json="${1#*=}";;
+      * ) error "Unknown key '${1%%=*}' passed to '${FUNCNAME[0]}'"; return 1;;
+    esac
+    shift
+  done
+
+  local -A env_config
+  populate_map_from_json "json=env_config_json" "aarr=env_config"
+
+  case "${env_config["type"],,}" in
+    env )
+      fn_env_var="${!env_config["var"]:-}"
+      if [[ -z "${fn_env_var}" ]]; then
+        warn "Env var '${env_config["var"]:-}' is empty or undefined"
+      fi
+      ;;
+    * ) error "Env Var of type '${env_config["type"]}' is not implemented"; return 1 ;;
+  esac
+}
+
+load_file_from_uri(){
+  # Loads the content of a file, located at the uri, into a variable
+  #
+  local -n \
+    fn_file_content
+  
+  local \
+    file_uri
+
+  while [[ -n "${1:-}" ]]; do
+    case "${1%%=*}" in
+      content ) fn_file_content="${1#*=}";;
+      uri ) file_uri="${1#*=}";;
+      * ) error "Unknown key '${1%%=*}' passed to '${FUNCNAME[0]}'"; return 1;;
+    esac
+    shift
+  done
+
+  local scheme="${file_uri%%:*}"
+
+  case "${scheme,,}" in
+    file ) 
+      local path="${file_uri#*://}"
+      if [[ ! -e "${path}" ]]; then
+        error "File '${path}' not found"
+        return 1
+      fi
+      if [[ -d "${path}" ]]; then
+        error "FilePath '${path}' is a directory. Must be a file."
+        return 1
+      fi
+      fn_file_content="$(< "${path}")"
+      if [[ -z "${fn_file_content}" ]]; then
+        warn "File '${path}' is empty"
+      fi
+      ;;
+    * ) error "Scheme '${scheme}' not implemented" ; return 1 ;;
+  esac
+}
+
+line_in_file(){
+  local \
+    path \
+    line \
+    state
+
+  while [[ -n "${1:-}" ]]; do
+    case "${1%%=*}" in
+      path )
+        path="${1#*=}"
+        if [[ ! -f "${path}" ]]; then
+          error "$path not found"
+          return 1
+        fi
+        ;;
+      line )
+        line="${1#*=}"
+        ;;
+      state )
+        state="${1#*=}"
+        ;;
+      * )
+        error "Unknown kwarg passed '${1%%=*}'"
+        return 1
+        ;;
+    esac
+    shift
+  done
+  case "${state}" in
+    "present" )
+      if ! grep -q "${line}" "${path}"; then
+        debug "line missing from file; inserting at head"
+        # Backup the File
+        if [[ ! -f "${path}.MASTER.BACKUP" ]]; then
+          cp -a "${path}" "${path}.MASTER.BACKUP"
+          info "Master Backup of '${path}' saved to '${path}.MASTER.BACKUP'"
+        fi
+        trap 'critical "Master Backup of ${path} found at ${path}.MASTER.BACKUP"' ERR
+        cp -a "${path}" "${path}.BACKUP"
+        trap 'cat "${path}.BACKUP" > "${path}"' ERR
+        trap 'rm -f "${path}.BACKUP"' RETURN
+        {
+          # Header
+          printf '%s\n' \
+            "${line}"
+          
+          # Body
+          cat "${path}.BACKUP"
+        } > "${path}"
+      fi
+      ;;
+    "absent" )
+      if grep -q "${line}" "${path}"; then
+        debug "line found in file"
+        error "State '${state}' not implemented"
+        return 255
+      fi
+      ;;
+    * )
+      error "Unknown state '${state}'"
+      return 1
+      ;;
+  esac
+}
+
 ### Start Main Logic ###
 
 declare \
@@ -177,204 +415,511 @@ done
 test -d "${WORKDIR}/.ssh/config.d" || mkdir -p "${WORKDIR}/.ssh/config.d"
 
 case "${args[0],,}" in
-  "up" )
+  "up" ) # Bring Up All of the Workspaces in the config file
     check_dep \
       kubectl \
       helm \
-      docker \
       code \
-      ssh-keygen
+      ssh-keygen \
+      yq \
+      jq
 
-    check_env \
-      KUBECONFIG \
-      CONTAINER_REGISTRY_USERNAME \
-      CONTAINER_REGISTRY_PASSWORD \
-      USER_SSH_KEY \
-      USER_SSH_PUB_KEY
-
-    ### Buildout the Workspace on the K8s Cluster
-    declare \
-      remote_project="${args[1]}" \
-      git_ref="${args[2]:-main}"
-    
-    # Get the path of the url & replace "/" with "-"
-    project_slug="${remote_project}"
-    project_slug="${project_slug#*:}"
-    project_slug="${project_slug%.*}"
-    project_slug="${project_slug//\//\-}"
-    trace "${project_slug}"
-    test -n "${project_slug}"
-
-    declare \
-      namespace="${project_slug}" \
-      release_name="${project_slug}"
-    
-    # Connect to the K8s Cluster
-    trace "$(< "${KUBECONFIG}")"
-    kubectl cluster-info
-    kubectl config current-context
-
-    # Generate a SSH Private/Pub Pair
-    if [[ ! -e "${WORKDIR}/.ssh/server_id_ed25519" ]]; then
-      ssh-keygen -t ed25519 -C "$(whoami || printf vscode)@remote-workspace" -N '' -f "${WORKDIR}/.ssh/server_id_ed25519"
-    fi
-    # Build the Values File
-    jq -n -c \
-      --arg userKey "$(< "${USER_SSH_PUB_KEY}")" \
-      --arg gitlabKey "$(< "${HOME}/.ssh/gitlab.com")" \
-      --arg githubKey "$(< "${HOME}/.ssh/gitlab.com")" \
-      --arg username "${CONTAINER_REGISTRY_USERNAME}" \
-      --arg password "${CONTAINER_REGISTRY_PASSWORD}" \
-      --arg serverPrivKey "$(< "${WORKDIR}/.ssh/server_id_ed25519")" \
-      --arg serverPubKey "$(< "${WORKDIR}/.ssh/server_id_ed25519.pub")" \
-      '{
-        workspace: {
-          ssh: {
-            authorizedKeys: [
-              $userKey
-            ],
-            keys: {
-              "gitlab.com": $gitlabKey,
-              "github.com": $githubKey,
-            }
-          }
-        },
-        container: {
-          image: {
-            username: $username,
-            password: $password,
-          }
-        },
-        services: {
-          ssh: {
-            keyPair: {
-              pub: $serverPubKey,
-              priv: $serverPrivKey,
-            }
-          }
-        }
-      }' | \
-    yq -P > "${TEMP_DIR}/values.yaml"
-    trace "$(< "${TEMP_DIR}/values.yaml")"
-    
-    # Deploy the Helm Chart w/ templated values
-    trace "helm install dry-run..."
-    trace "$(< <(helm install \
-      "${release_name}" \
-      "${CONTEXT}/helm/remote-workspace" \
-      --dry-run \
-      --debug \
-      --namespace "${namespace}" \
-      --values "${TEMP_DIR}/values.yaml"
-    ))"
-    info "Deploying Remote Workspace; this could take up to 15 minutes. Press Ctrl-C at any time to cancel."
-    helm upgrade \
-      "${release_name}" \
-      "${CONTEXT}/helm/remote-workspace" \
-      --install \
-      --namespace "${namespace}" \
-      --create-namespace \
-      --values "${TEMP_DIR}/values.yaml" \
-      --atomic \
-      --timeout 15m0s
-    
-    ### Setup the Remote Workspace
-
-    # Get the LoadBalancer IP
+    # Notes:
+    #   ALL_RUNTIME_VARS is passed as a nameref
     declare -a \
-      public_ip
+      required_runtime_keys=(
+        "KUBECONFIG"
+        "CONTAINER_REGISTRY_USERNAME"
+        "CONTAINER_REGISTRY_PASSWORD"
+        "USER_SSH_KEY"
+        "USER_SSH_PUB_KEY"
+      )
+
     declare \
-      remote_authority \
-      project_name \
-      project_addr
+      config_file \
+      config_yaml \
+      config_json
 
-    remote_authority="ssh-remote+${release_name}"
-    project_name="${remote_project}"
-    project_name="${project_name##*/}"
-    project_name="${project_name%.*}"
-    project_addr="${remote_project%:*}"
-    project_addr="${project_addr#*@}"
-    trace "project_name=${project_name}"
-    trace "project_addr=${project_addr}"
-    trace "remote_authority=${remote_authority}"
+    find_config \
+      config_file
     
-    public_ip=("$(kubectl -n "${namespace}" get service "${release_name}-workspace-ssh-svc" -o json | jq -r '.status.loadBalancer.ingress[].ip')")
-    trace "public_ip=[$(printf "'%s', " "${public_ip[@]}")]"
-    test "${#public_ip[@]}" -gt 0
-    
-    if [[ ! -f "${HOME}/.ssh/known_hosts" ]]; then
-      : > "${HOME}/.ssh/known_hosts"
+    config_json="$(yq -o json "${config_file}")"
+
+    # TODO Compare Config File against a Spec
+    if [[ -z "${config_json:-}" ]]; then
+      critical "Config File '${config_file}' is empty"
+      exit 1
     fi
-    for pub_ip in "${public_ip[@]}"; do
-      ssh-keyscan -H "${pub_ip}" >> "${HOME}/.ssh/known_hosts"
-      ssh -i "${USER_SSH_KEY}" "vscode@${pub_ip}" echo ping
-    done
-    ssh -i "${USER_SSH_KEY}" "vscode@${public_ip[0]}" bash < <(echo "
-      set -xEeuo pipefail
-      cd '/home/vscode/workspace'
-      if [[ ! -d '${project_name}' ]]; then
-        ssh-keyscan -H '${project_addr}' >> ~/.ssh/known_hosts
-        ssh -T '${remote_project%:*}'
-        git clone \
-          -b '${git_ref}' \
-          '${remote_project}'
-      else
-        echo '/home/vscode/workspace/${project_name} already found so skip clone' >&2
+
+    declare -a \
+      declared_projects
+    
+    readarray -t declared_projects < <(
+      jq -rn --argjson "conf" "${config_json}" '$conf.projects | keys[]'
+    )
+    if [[ "${#declared_projects[@]}" -eq 0 ]]; then
+      critical "No Projects Declared in the Config"
+      exit 1
+    fi
+    
+    # Generate an SSH Private/Pub Pair
+    if [[ ! -f "${WORKDIR}/.ssh/server_id_ed25519" ]]; then
+      rm -f "${WORKDIR}/.ssh/server_id_ed25519" "${WORKDIR}/.ssh/server_id_ed25519.pub" || true
+      ssh-keygen -t ed25519 -C "$(whoami || printf vscode)@remote-workspace" -N '' -f "${WORKDIR}/.ssh/server_id_ed25519"
+      chmod 600 "${WORKDIR}/.ssh/server_id_ed25519" "${WORKDIR}/.ssh/server_id_ed25519.pub"
+    fi
+    
+    declare loop_vars=(
+      project_json_config
+      project_cli_env
+      missing_keys
+      project_vscode_settings
+      project_all_files
+      project_secret_files
+      project_files
+      project_all_ssh_keys
+      project_git_keys
+      project_ssh_keys
+      ssh_keys_json
+      project_ssh_hosts
+      ssh_hosts_json
+      namespace
+      project_git_url
+      project_git_ref
+      project_git_name
+      project_git_addr
+      kubectl
+      helm
+      release_name
+      public_ips
+    )
+    for project in "${declared_projects[@]}"; do
+      # Make sure all project variables are cleared
+      for var in "${loop_vars[@]}" ; do
+        unset "${var}" || true
+      done
+
+      info "Bringing Up ${project}"
+
+      ### Load the runtime environment for the project
+      debug "Loading Project Config"
+      declare project_json_config
+      project_json_config="$(
+        jq -rn --argjson 'conf' "${config_json}" \
+          --arg 'proj' "${project}" \
+          '$conf.projects[$proj]'
+      )"
+      if [[ -z "${project_json_config}" ]]; then
+        error "'${project}''s Project Configuration is Empty"
+        continue
       fi
-    ")
+      trace "$(< <(
+        echo "'${project}' Config" ;
+        printf '%s\n' "$(
+          jq -n --argjson conf "${project_json_config}" '$conf'
+        )"
+      ))"
 
-    # Add the Remote Host to the SSH config  
-    if [[ ! -f "${WORKDIR}/.ssh/config.d/${release_name}" ]]; then
-      echo -n "\
-      Host ${release_name}
-        Hostname ${public_ip[0]}
-        User vscode
-        IdentityFile ${USER_SSH_KEY}" \
-      >> "${WORKDIR}/.ssh/config.d/${release_name}"
-    fi
-
-    # Add this Config to the Users Config
-    declare \
-      include_line="Include ${WORKDIR}/.ssh/config.d/*"
-    
-    trace "$(grep "${include_line}" "${HOME}/.ssh/config")"
-    if ! grep -q "${include_line}" "${HOME}/.ssh/config"; then
-      trace "Include line not found in users ssh config. Inserting."
-      if [[ ! -f "${HOME}/.ssh/config.MASTER.BACKUP" ]]; then
-        cp "${HOME}/.ssh/config" "${HOME}/.ssh/config.MASTER.BACKUP"
-        chmod ug+r,a-wx "${HOME}/.ssh/config.MASTER.BACKUP"
-        success "Master Backup of Users's SSH Settings has been saved to '${HOME}/.ssh/config.MASTER.BACKUP'"
-      fi
-      cp "${HOME}/.ssh/config" "${HOME}/.ssh/config.BACKUP"
-      trap 'mv "${HOME}/.ssh/config.BACKUP" "${HOME}/.ssh/config"' ERR
-      trap 'success "Master backup of User SSH Config found at ${HOME}/.ssh/config.MASTER.BACKUP"' ERR
-      trap 'rm "${HOME}/.ssh/config.BACKUP"' EXIT
-      {
-        # Header
-        printf '%s\n' \
-          "${include_line}"
-        
-        # Body
-        cat "${HOME}/.ssh/config.BACKUP"
-      } >  "${HOME}/.ssh/config"
-    fi
-
-    ### Build the VsCode Workspace File ###
-    jq -n \
-      --arg remoteAuthority "${remote_authority}" \
-      --arg workspaceUri "vscode-remote://${remote_authority}/home/vscode/workspace" \
-      '{
-        folders: [
+      # Load the CLI Environment Variables
+      debug "Load & Merge the Global & Project CLI ENV Vars"
+      declare -A project_cli_env
+      populate_map_from_json "json=config_json" "key=cliEnv" "aarr=project_cli_env"
+      populate_map_from_json "json=project_json_config" "key=cliEnv" "aarr=project_cli_env"
+      for key in "${!project_cli_env[@]}"; do
+        declare value_type
+        read -r value_type < <(
           {
-            uri: $workspaceUri
+            { printf '%s'   "${project_cli_env["${key}"]}" | jq -cr '. | type' ; } || \
+            { printf '"%s"' "${project_cli_env["${key}"]}" | jq -cr '. | type' ; }
+          } 2>/dev/null
+        )
+        case "${value_type,,}" in
+          string ) project_cli_env["${key}"]="$(eval printf "%s" "${project_cli_env["${key}"]}")" ;;
+          object )
+            declare env_val
+            load_env "json=${project_cli_env["${key}"]}" "var=env_val"
+            project_cli_env["${key}"]="$(eval printf "%s" "${env_val}")"
+            unset env_val
+            ;;
+          * ) error "cliEnv Invalid Data Type; got '${value_type}'"; exit 1 ;;
+        esac
+        unset value_type
+      done
+      trace "$(< <(
+        echo "'${project}' CLI Env" ;
+        for key in "${!project_cli_env[@]}"; do
+          printf '%s=%s\n' "${key}" "${project_cli_env["${key}"]}"
+        done
+      ))"
+      
+      debug "Check for Missing CLI ENV Vars"
+      declare -a missing_keys=()
+      for key in "${required_runtime_keys[@]}"; do
+        if [[ -z "${project_cli_env["${key}"]:-}" ]]; then
+          missing_keys+=("${key}")
+        fi
+      done
+      if [[ "${#missing_keys[@]}" -gt 0 ]]; then
+        error "Project '${project}' is missing the following Keys, please double check the config & the env: [$(printf '%s,' "${missing_keys[@]}")]"
+        continue
+      fi
+      
+      # Load the VSCode Workspace Settings
+      debug "Load & Merge the Global & Project VSCode Workspace Settings"
+      declare -A project_vscode_settings
+      populate_map_from_json "json=config_json" "key=vscode" "aarr=project_vscode_settings"
+      populate_map_from_json "json=project_json_config" "key=vscode" "aarr=project_vscode_settings"
+      trace "$(< <(
+        echo "'${project}' VSCode Workspace Settings";
+        for key in "${!project_vscode_settings[@]}"; do
+          printf '%s=%s\n' "${key}" "${project_vscode_settings["${key}"]}"
+        done
+      ))"
+
+      # Load the Files
+      debug "Load & Merge the Global & Project Extra Files"
+      declare -a project_all_files project_secret_files project_files
+      populate_list_from_json "json=config_json" "key=files" "arr=project_all_files"
+      populate_list_from_json "json=project_json_config" "key=files" "arr=project_all_files"
+      for file_obj_json in "${project_all_files[@]}"; do
+        declare file_contents file_json
+        declare -A file_config
+        populate_map_from_json "json=file_obj_json" "aarr=file_config"
+        file_config["src"]="$(eval printf '%s' "${file_config["src"]}")"
+        load_file_from_uri "uri=${file_config["src"]}" "content=file_contents"
+        read -r file_json < <(
+          jq -cnr \
+              --arg dest "${file_config["dest"]//"~"/"/home/vscode"}" \
+              --arg data "${file_contents}" \
+              '{ $dest, $data }'
+        )
+        case "${file_config["type"],,}" in
+          secret ) project_secret_files+=("${file_json}") ;;
+          configMap ) project_files+=("${file_json}") ;;
+          * ) error "Files of type '${file_config["type"]}' is not implemented"; exit 1 ;;
+        esac
+        unset file_contents file_json file_config
+      done
+      trace "$(< <(
+        echo "'${project}' Extra Files";
+        for key in "${!file_config[@]}"; do
+          printf '%s=%s\n' "${key}" "${file_config["${key}"]}"
+        done
+      ))"
+
+      # Load the global SSH Keys & Merge the Project Defined Keys
+      debug "Load & Merge the Global & Project SSH Keys"
+      declare -A project_all_ssh_keys project_git_keys project_ssh_keys
+      populate_map_from_json "json=config_json" "key=sshKeys" "aarr=project_all_ssh_keys"
+      populate_map_from_json "json=project_json_config" "key=sshKeys" "aarr=project_all_ssh_keys"
+      for key in "${!project_all_ssh_keys[@]}"; do
+        declare sshkey_json="${project_all_ssh_keys["${key}"]}"
+        declare -A sshkey_conf
+        populate_map_from_json "json=sshkey_json" "aarr=sshkey_conf"
+        case "${sshkey_conf["type"],,}" in
+          generic ) project_ssh_keys+=(["${key}"]="$(eval printf '%s' "${sshkey_conf["src"]}")") ;;
+          git ) project_git_keys+=(["${key}"]="$(eval printf '%s' "${sshkey_conf["src"]}")") ;;
+          * ) error "sshKeys of type '${sshkey_conf["type"]}' is not implemented"; exit 1 ;;
+        esac
+        unset sshkey_json sshkey_conf
+      done
+      trace "$(< <(
+        echo "'${project}' Remote Git Server SSH Keys";
+        for key in "${!project_git_keys[@]}"; do
+          printf '%s=%s\n' "${key}" "${project_git_keys["${key}"]}"
+        done
+      ))"
+      trace "$(< <(
+        echo "'${project}' Generic SSH Keys";
+        for key in "${!project_ssh_keys[@]}"; do
+          printf '%s=%s\n' "${key}" "${project_ssh_keys["${key}"]}"
+        done
+      ))"
+      # Convert SSH Keys into a JSON Object for the Helm Chart
+      declare ssh_keys_json
+      read -r ssh_keys_json < <(
+        {
+          for key in "${!project_ssh_keys[@]}"; do
+            if [[ ! -f "${project_ssh_keys["$key"]}" ]]; then
+              error "SSH Key '${project_ssh_keys["$key"]}' not found"
+            fi
+            jq -ncr \
+              --arg key "${key}" \
+              --arg value "$(< "${project_ssh_keys["$key"]}")" \
+              '{$key, $value}'
+          done
+          for key in "${!project_git_keys[@]}"; do
+            if [[ ! -f "${project_git_keys["$key"]}" ]]; then
+              error "SSH Key '${project_git_keys["$key"]}' not found"
+            fi
+            jq -ncr \
+              --arg key "${key}" \
+              --arg value "$(< "${project_git_keys["$key"]}")" \
+              '{$key, $value}'
+          done
+        } | jq -rsc 'from_entries'
+      )
+      # Load the global SSH Hosts & Merge the Project Defined Hosts
+      debug "Load & Merge the Global & Project SSH Hosts"
+      declare -A project_ssh_hosts
+      populate_map_from_json "json=config_json" "key=sshHosts" "aarr=project_ssh_hosts"
+      populate_map_from_json "json=project_json_config" "key=sshHosts" "aarr=project_ssh_hosts"
+      trace "$(< <(
+        echo "'${project}' SSH Hosts";
+        for key in "${!project_ssh_hosts[@]}"; do
+          printf '%s=%s\n' "${key}" "${project_ssh_hosts["${key}"]}"
+        done
+      ))"
+      
+      declare ssh_hosts_json
+      # Add the SSH Remote Host Configs
+      read -r ssh_hosts_json < <(
+        {
+          # The SSH Hosts for Remote Git Servers
+          for key in "${!project_git_keys[@]}"; do
+            jq -ncr \
+              --arg host "${key}" \
+              '{
+                "\($host)": {
+                  "AddKeysToAgent": "yes",
+                  "IdentityFile": "~/.ssh/\($host)"
+                }
+              }'
+          done 
+          # The SSH Hosts for Generic SSH Servers
+          # Notes:
+          #   The jq filter '{} * {}' recursively merges the two JSON objects, with the right object overwritting the left if a key's value is a scalar.
+          for key in "${!project_ssh_hosts[@]}"; do
+            jq -ncr \
+              --arg host "${key}" \
+              --argjson conf "${project_ssh_hosts["${key}"]}" \
+              '{
+                "\($host)": {
+                  "AddKeysToAgent": "yes",
+                  "IdentityFile": "~/.ssh/\($host)"
+                }
+              } * {
+                "\($host)": $conf
+              }'
+          done
+        } | jq -rsc 'add'
+      )
+
+      declare \
+        namespace="remote-workspace-${project,,}" \
+        project_git_url \
+        project_git_ref \
+        project_git_name \
+        project_git_addr
+
+      read -r project_git_url < <(
+        jq -rn \
+          --argjson "conf" "${project_json_config}" \
+          '$conf.git.url'
+      )
+      read -r project_git_ref < <(
+        jq -rn \
+          --argjson "conf" "${project_json_config}" \
+          '$conf.git.ref'
+      )        
+      project_git_name="${project_git_url}"
+      project_git_name="${project_git_name##*/}"
+      project_git_name="${project_git_name%.*}"
+      project_git_addr="${project_git_url%:*}"
+      project_git_addr="${project_git_addr#*@}"
+
+      trace "project_git_url=${project_git_url}"
+      trace "project_git_ref=${project_git_ref}"
+      trace "project_git_name=${project_git_name}"
+      trace "project_git_addr=${project_git_addr}"
+
+      ### Check Connection to the K8s Cluster
+      declare kubectl helm
+      kubectl="kubectl --kubeconfig ${project_cli_env["KUBECONFIG"]}"
+      helm="helm --kubeconfig ${project_cli_env["KUBECONFIG"]}"
+      debug "$(${kubectl} config current-context)"
+      ${kubectl} cluster-info
+
+      ### Build the Values File
+      # TODO Don't inject SSH Keys into the values file; instead (re)create Kubernetes Secrets
+      jq -n -c \
+        --arg userPubKey "$(< "${project_cli_env["USER_SSH_PUB_KEY"]}")" \
+        --argjson sshKeys "${ssh_keys_json}" \
+        --argjson sshHosts "${ssh_hosts_json}" \
+        --argjson secretFiles "$(jq -scr < <(printf "%s\n" "${project_secret_files[@]}"))" \
+        --argjson files "$(jq -scr < <(printf "%s\n" "${project_files[@]}"))" \
+        --arg cntrReg "${project_cli_env["CONTAINER_REGISTRY_URL"]}" \
+        --arg cntrPath "${project_cli_env["CONTAINER_IMAGE_PATH"]}" \
+        --arg cntrTag "${project_cli_env["CONTAINER_IMAGE_TAG"]}" \
+        --arg cntrUser "${project_cli_env["CONTAINER_REGISTRY_USERNAME"]}" \
+        --arg cntPass "${project_cli_env["CONTAINER_REGISTRY_PASSWORD"]}" \
+        --arg serverPrivKey "$(< "${WORKDIR}/.ssh/server_id_ed25519")" \
+        --arg serverPubKey "$(< "${WORKDIR}/.ssh/server_id_ed25519.pub")" \
+        '{
+          workspace: {
+            files: {
+              secrets: $secretFiles,
+              configMaps: $files
+            },
+            ssh: {
+              authorizedKeys: [
+                $userPubKey
+              ],
+              keys: $sshKeys,
+              config: {
+                hosts: $sshHosts
+              }
+            }
+          },
+          container: {
+            image: {
+              registry: $cntrReg,
+              path: $cntrPath,
+              tag: $cntrTag,
+              username: $cntrUser,
+              password: $cntPass
+            }
+          },
+          services: {
+            ssh: {
+              keyPair: {
+                pub: $serverPubKey,
+                priv: $serverPrivKey
+              }
+            }
           }
-        ],
-        "remoteAuthority": $remoteAuthority,
-        settings: {}
-      }' \
-    > "${WORKDIR}/.cache/${release_name}.code-workspace"
+        }' | \
+      yq -P > "${TEMP_DIR}/values.yaml"
+      trace "$(< <(
+        echo ;
+        cat "${TEMP_DIR}/values.yaml"
+      ))"
+
+      ### Deploy the Helm Chart
+      declare release_name="${project,,}"
+      debug "helm install dry-run..."
+      trace "$(< <(
+        echo ;
+        ${helm} install \
+          "${release_name}" \
+          "${CONTEXT}/helm/remote-workspace" \
+          --dry-run \
+          --debug \
+          --namespace "${namespace}" \
+          --values "${TEMP_DIR}/values.yaml" \
+          2>&1
+      ))"
+      info "Deploying Remote Workspace; this could take up to 15 minutes. Press Ctrl-C at any time to cancel."
+      ${helm} upgrade \
+        "${release_name}" \
+        "${CONTEXT}/helm/remote-workspace" \
+        --install \
+        --namespace "${namespace}" \
+        --create-namespace \
+        --values "${TEMP_DIR}/values.yaml" \
+        --atomic \
+        --timeout 15m0s
+      
+      ### Setup the Remote Workspace
+
+      ## Get the LoadBalancer IP      
+      declare -a \
+        public_ips
+      readarray -t public_ips < <(
+        ${kubectl} -o json \
+          -n "${namespace}" \
+          get service "${release_name}-workspace-ssh-svc" \
+        | jq -r '.status.loadBalancer.ingress[].ip'
+      )
+      trace "public_ips=[$(printf '%s,' "${public_ips[@]}")]"
+      if [[ "${#public_ips[@]}" -eq 0 ]]; then
+        error "No Publically Routable Ips available for Project '${project}'"
+        continue
+      fi
+      
+      ## Setup SSH Access to the Remote Workspace
+      if [[ ! -f "${HOME}/.ssh/known_hosts" ]]; then
+        : > "${HOME}/.ssh/known_hosts"
+      fi
+      for public_ip in "${public_ips[@]}"; do
+        ssh-keyscan -H "${public_ip}" 2>/dev/null >> "${HOME}/.ssh/known_hosts"
+        ssh -i "${project_cli_env["USER_SSH_KEY"]}" "vscode@${public_ip}" echo 'SSH connection successful'
+      done
+
+      ## Clone the Repository in the Remote Workspace
+      ssh -i "${project_cli_env["USER_SSH_KEY"]}" "vscode@${public_ips[0]}" bash < <(echo "
+        set -xEeuo pipefail
+        cd '/home/vscode/workspace'
+        if [[ ! -f ~/.ssh/known_hosts ]]; then
+          : > ~/.ssh/known_hosts
+        fi
+        if [[ ! -d '${project_git_name}' ]]; then
+          ssh-keyscan -H '${project_git_addr}' >> ~/.ssh/known_hosts
+          ssh -T 'git@${project_git_addr}'
+          git clone \
+            -b '${project_git_ref}' \
+            '${project_git_url}' \
+            '${project_git_name}'
+        else
+          echo \"'\${HOME}/${project_git_name}' already found so skipping clone\" >&2
+        fi
+      ")
+
+      ## Add the Remote Host to the SSH config  
+      if [[ ! -f "${WORKDIR}/.ssh/config.d/${release_name}" ]]; then
+        echo -n "\
+        Host ${release_name}
+          Hostname ${public_ip[0]}
+          User vscode
+          IdentityFile ${project_cli_env["USER_SSH_KEY"]}" \
+        >> "${WORKDIR}/.ssh/config.d/${release_name}"
+      fi
+
+      # Add this Config to the Users Config
+      line_in_file \
+        "path=${HOME}/.ssh/config" \
+        "line=Include ${WORKDIR}/.ssh/config.d/*" \
+        "state=present"
+
+      ### Build the VsCode Workspace File ###
+      
+      jq -n \
+        --arg remoteAuthority "ssh-remote+${release_name}" \
+        --arg defaultProfile "${project_vscode_settings["defaultProfile"]:-"bash"}" \
+        --arg workspaceUri "vscode-remote://ssh-remote+${release_name}/home/vscode/workspace" \
+        '{
+          "folders": [
+            {
+              uri: $workspaceUri
+            }
+          ],
+          "remoteAuthority": $remoteAuthority,
+          "settings": {
+            "terminal.integrated.env.linux": {
+              "PATH": "/home/linuxbrew/.linuxbrew/bin:${env:PATH}"
+            },
+            "terminal.integrated.profiles.linux": {
+              "fish": {
+                "path": "/home/linuxbrew/.linuxbrew/bin/fish",
+              },
+              "bash": {
+                "path": "/home/linuxbrew/.linuxbrew/bin/bash",
+                "icon": "terminal-bash"
+              }
+            },
+            "terminal.integrated.defaultProfile.linux": $defaultProfile
+          }
+        }' \
+      > "${WORKDIR}/.cache/${release_name}.code-workspace"
+    done
+    ;;
+  "add" ) # Add a new workspace by name to the config file
+    critical "'add' currently Not Implemented"
+    exit 1
     ;;
   "down" )
+    critical "'down' currently Not Implemented"
+    exit 1
     check_dep \
       kubectl \
       helm
@@ -400,7 +945,7 @@ case "${args[0],,}" in
 
     info "Retrieve the LoadBalancer IP"
     declare -a public_ip
-    public_ip=("$(kubectl -n "${namespace}" get service "${release_name}-workspace-ssh-svc" -o json | jq -r '.status.loadBalancer.ingress[].ip')")
+    public_ip=("$(${kubectl} -n "${namespace}" get service "${release_name}-workspace-ssh-svc" -o json | jq -r '.status.loadBalancer.ingress[].ip')")
     trace "public_ip=[$(printf "'%s', " "${public_ip[@]}")]"
     test "${#public_ip[@]}" -gt 0
 
