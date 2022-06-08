@@ -1,2 +1,50 @@
+# A Remote Workspace Configuration Example
 ---
-# A Remote Workspace Configuration
+cliEnv:
+  KUBECONFIG: "$HOME/.kubeconfig.d/cluster"
+  USER_SSH_KEY: "$HOME/.ssh/id_rsa"
+  USER_SSH_PUB_KEY: "$HOME/.ssh/id_rsa.pub"
+  CONTAINER_REGISTRY_URL: registry.example.com/remote-workspace
+  CONTAINER_IMAGE_PATH: workspace
+  CONTAINER_IMAGE_TAG: latest
+  CONTAINER_REGISTRY_USERNAME: username
+  CONTAINER_REGISTRY_PASSWORD:
+    type: env # One of [env,]
+    var: CONTAINER_REGISTRY_PASSWORD
+sshKeys:
+  "gitlab.com": 
+    src: "$HOME/.ssh/gitlab.com"
+    type: git
+  "github.com": 
+    src: "$HOME/.ssh/github.com"
+    type: git
+vscode:
+  defaultProfile: fish # one of [fish, bash]
+# Empty Global Defaults; may be omitted but included for documentation purposes
+files: []
+sshHosts: {}
+### Project Declaration
+projects:
+  exampleproject:
+    git:
+      url: git@github.com:user/example-project.git
+      ref: main
+    sshKeys:
+      "example.com": 
+        src: "$HOME/.ssh/example.com"
+        type: generic
+    sshHosts:
+      host1:
+        # Key/Value Pairs will be copied Verbatim into the SSH config
+        Hostname: host.example.com
+        Port: 22
+        User: username
+        IdentityFile: "~/.ssh/example.com" # Always starts w/ '~/.ssh' filename should match a key of one of the keys in the sshKey map (either globally or project scoped)
+    files:
+      - src: "file://$HOME/.kubeconfig/external-cluster"
+        dest: "~/.kubeconfig/external-cluster"
+        type: Secret # One of ConfigMap, Secret, Copy
+    # Empty Overrides that do nothing; may be omitted but included for documentation purposes
+    workspaceEnv: {}
+    cliEnv: {}
+    vscode: {}
