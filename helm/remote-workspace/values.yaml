@@ -13,27 +13,37 @@ workspace:
   #   ssh: "git@gitlab.com:pahansen95/eap-proxy.git"
   #   ref: main
   env: {}
+  files:
+    # Items in the lists take the form
+    #
+    # - dest: "/path/to/file.ext"
+    #   data: |
+    #     Literal Content of the file
+    #
+    secrets: []
+    configMaps: []
   ssh:
     authorizedKeys: []
-    config: |
-      # SSH Client Config
+    config: 
+      header: |
+        # SSH Client Config
+        Include ~/workspace/.ssh/user_config
 
-      ### Global Config ###
-      Compression yes
-      PasswordAuthentication no
-      PubkeyAuthentication yes
-      UpdateHostKeys yes
-
-      ### Hosts ###
-      Host gitlab.com
-        AddKeysToAgent yes
-        IdentityFile ~/.ssh/gitlab.com
-      Host github.com
-        AddKeysToAgent yes
-        IdentityFile ~/.ssh/github.com
+        ### Global Config ###
+        Compression yes
+        PasswordAuthentication no
+        PubkeyAuthentication yes
+        UpdateHostKeys yes
+      hosts: 
+        github.com:
+          AddKeysToAgent: "yes"
+          IdentityFile: "~/.ssh/github.com"
+        gitlab.com:
+          AddKeysToAgent: "yes"
+          IdentityFile: "~/.ssh/gitlab.com"
     keys:
-      "gitlab.com": ""
-      "github.com": ""
+      github.com: ""
+      gitlab.com: ""
 
 container:
   mounts:

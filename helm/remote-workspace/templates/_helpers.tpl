@@ -41,3 +41,20 @@
 {{- printf "{\"auths\":{\"%s\":{\"username\":\"%s\",\"password\":\"%s\",\"auth\":\"%s\"}}}" .registry .username .password (printf "%s:%s" .username .password | b64enc) | b64enc }}
 {{- end }}
 {{- end }}
+
+{{/*
+*
+* SSH Config Assembly
+*
+*/}}
+{{- define "ssh.config" -}}
+{{- with .Values.workspace.ssh.config -}}
+{{ printf "%s\n### Hosts ###" .header }}
+{{ range $host, $hostConfig := .hosts -}}
+{{ printf "Host %s" $host }}
+{{ range $confKey, $confValue := $hostConfig -}}
+{{ printf "  %s %s" $confKey $confValue }}
+{{ end -}}
+{{ end -}}
+{{- end -}}
+{{- end -}}
