@@ -39,7 +39,8 @@ ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
 COPY --chown=vscode:vscode ./entrypoint.sh /home/vscode/entrypoint.sh
 RUN \
   chmod +x /home/vscode/entrypoint.sh && \
-  mkdir -p /home/vscode/.sshd /home/vscode/.ssh
+  mkdir -p /home/vscode/.sshd /home/vscode/.ssh /home/vscode/workspace/.ssh && \
+  : > /home/vscode/workspace/.ssh/user_config
 
 WORKDIR /home/vscode
 
