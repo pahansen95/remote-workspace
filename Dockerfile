@@ -10,10 +10,7 @@ RUN \
   apt-get update && \
   apt-get install -y \
     curl \
-    bash \
     build-essential \
-    nvi \
-    nano \
     ssh
 
 RUN \
@@ -32,7 +29,12 @@ RUN \
     git-lfs \
     helm \
     kubectl \
-    docker
+    docker \
+    fish \
+    bash \
+    emacs
+
+ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
 
 COPY --chown=vscode:vscode ./entrypoint.sh /home/vscode/entrypoint.sh
 RUN \
