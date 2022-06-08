@@ -30,7 +30,8 @@ workspace:
         Include ~/workspace/.ssh/user_config
 
         ### Global Config ###
-        Compression yes
+        # Compression yes
+        Compression no
         PasswordAuthentication no
         PubkeyAuthentication yes
         UpdateHostKeys yes
