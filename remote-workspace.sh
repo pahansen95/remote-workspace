@@ -918,55 +918,210 @@ case "${args[0],,}" in
     exit 1
     ;;
   "down" )
-    critical "'down' currently Not Implemented"
-    exit 1
     check_dep \
       kubectl \
       helm
 
-    check_env \
-      KUBECONFIG
-
-    ### Teardown the Workspace on the K8s Cluster
-    declare \
-      remote_project="${args[1]}"
+    declare -a \
+      required_runtime_keys=(
+        "KUBECONFIG"
+      )
     
-    # Get the path of the url & replace "/" with "-"
-    project_slug="${remote_project}"
-    project_slug="${project_slug#*:}"
-    project_slug="${project_slug%.*}"
-    project_slug="${project_slug//\//\-}"
-    trace "${project_slug}"
-    test -n "${project_slug}"
-
+    # Load the Config
     declare \
-      namespace="${project_slug}" \
-      release_name="${project_slug}"
+      config_file \
+      config_json
 
-    info "Retrieve the LoadBalancer IP"
-    declare -a public_ip
-    public_ip=("$(${kubectl} -n "${namespace}" get service "${release_name}-workspace-ssh-svc" -o json | jq -r '.status.loadBalancer.ingress[].ip')")
-    trace "public_ip=[$(printf "'%s', " "${public_ip[@]}")]"
-    test "${#public_ip[@]}" -gt 0
+    find_config "config_file"
+    
+    config_json="$(yq -o json "${config_file}")"
 
+    # TODO Compare Config File against a Spec
+    if [[ -z "${config_json:-}" ]]; then
+      critical "Config File '${config_file}' is empty"
+      exit 1
+    fi
 
-    info "Uninstall Release ${release_name}"
-    helm uninstall \
-      "${release_name}" \
-      --namespace "${namespace}" || true
+    declare -a \
+      declared_projects
+    readarray -t declared_projects < <(
+      jq -rn --argjson "conf" "${config_json}" '$conf.projects | keys[]'
+    )
+    if [[ "${#declared_projects[@]}" -eq 0 ]]; then
+      critical "No Projects Declared in the Config"
+      exit 1
+    fi
 
-    info "Removing Old State Files"
-    rm \
-      "${WORKDIR}/.ssh/config.d/${release_name}" \
-      "${WORKDIR}/.cache/${release_name}.code-workspace" \
-    || true
+    for project in "${declared_projects[@]}"; do
+      # Load the project config
+      debug "Loading Project Config"
+      declare project_json_config
+      project_json_config="$(
+        jq -rn --argjson 'conf' "${config_json}" \
+          --arg 'proj' "${project}" \
+          '$conf.projects[$proj]'
+      )"
+      if [[ -z "${project_json_config}" ]]; then
+        error "'${project}''s Project Configuration is Empty"
+        continue
+      fi
+      trace "$(< <(
+        echo "'${project}' Config" ;
+        printf '%s\n' "$(
+          jq -n --argjson conf "${project_json_config}" '$conf'
+        )"
+      ))"
+      
+      # Load the CLI Environment Variables
+      debug "Load & Merge the Global & Project CLI ENV Vars"
+      declare -A project_cli_env
+      populate_map_from_json "json=config_json" "key=cliEnv" "aarr=project_cli_env"
+      populate_map_from_json "json=project_json_config" "key=cliEnv" "aarr=project_cli_env"
+      for key in "${!project_cli_env[@]}"; do
+        declare value_type
+        read -r value_type < <(
+          {
+            { printf '%s'   "${project_cli_env["${key}"]}" | jq -cr '. | type' ; } || \
+            { printf '"%s"' "${project_cli_env["${key}"]}" | jq -cr '. | type' ; }
+          } 2>/dev/null
+        )
+        case "${value_type,,}" in
+          string ) project_cli_env["${key}"]="$(eval printf "%s" "${project_cli_env["${key}"]}")" ;;
+          object )
+            declare env_val
+            load_env "json=${project_cli_env["${key}"]}" "var=env_val"
+            project_cli_env["${key}"]="$(eval printf "%s" "${env_val}")"
+            unset env_val
+            ;;
+          * ) error "cliEnv Invalid Data Type; got '${value_type}'"; exit 1 ;;
+        esac
+        unset value_type
+      done
+      trace "$(< <(
+        echo "'${project}' CLI Env" ;
+        for key in "${!project_cli_env[@]}"; do
+          printf '%s=%s\n' "${key}" "${project_cli_env["${key}"]}"
+        done
+      ))"
+      
+      debug "Check for Missing CLI ENV Vars"
+      declare -a missing_keys=()
+      for key in "${required_runtime_keys[@]}"; do
+        if [[ -z "${project_cli_env["${key}"]:-}" ]]; then
+          missing_keys+=("${key}")
+        fi
+      done
+      if [[ "${#missing_keys[@]}" -gt 0 ]]; then
+        error "Project '${project}' is missing the following Keys, please double check the config & the env: [$(printf '%s,' "${missing_keys[@]}")]"
+        continue
+      fi
 
-    info "Clean Up Known Hosts"
-    for pub_ip in "${public_ip[@]}"; do
-      ssh-keygen \
-        -R "${pub_ip}" \
-      || true
+      # Test Connection to the cluster
+      declare kubectl helm
+      kubectl="kubectl --kubeconfig ${project_cli_env["KUBECONFIG"]}"
+      helm="helm --kubeconfig ${project_cli_env["KUBECONFIG"]}"
+      debug "$(${kubectl} config current-context)"
+      ${kubectl} cluster-info
+
+      # Check if the release is installed
+      info "Finding Installed Helm Release"
+      declare \
+        namespace="remote-workspace-${project,,}" \
+        release_name="${project,,}" \
+        is_release_installed
+      
+      read -r is_release_installed < <(
+        ${helm} list \
+          --output json \
+          --namespace "${namespace}" |
+        jq -cr \
+          --arg name "${release_name}" \
+          '((.[] | select(.name == $name)) // false) and true'
+      )
+      trace "is_release_installed=${is_release_installed}"
+      
+      if ! "${is_release_installed}"; then
+        info "Release '${release_name}' is not installed so skip cleanup"
+        continue
+      fi
+
+      ## Get the LoadBalancer IP
+      declare -a \
+        public_ips
+      readarray -t public_ips < <(
+        ${kubectl} -o json \
+          -n "${namespace}" \
+          get service "${release_name}-workspace-ssh-svc" \
+        | jq -r '.status.loadBalancer.ingress[].ip'
+      )
+      trace "public_ips=[$(printf '%s,' "${public_ips[@]}")]"
+      if [[ "${#public_ips[@]}" -eq 0 ]]; then
+        error "No Publically Routable Ips available for Project '${project}'"
+        continue
+      fi
+
+      # Uninstall helm release & Cleanup Local WorkSpace Configs
+      info "Uninstall Helm Release"
+      ${helm} uninstall \
+        "${release_name}" \
+        --namespace "${namespace}"
+      
+      # Cleanup local workspace
+      info "Removing Workspace Files"
+      rm \
+        "${WORKDIR}/.cache/${project}.code-workspace" \
+        "${WORKDIR}/.ssh/config.d/${project}"
+      
+      info "Removing SSH fingerprints from known_hosts"
+      for public_ip in "${public_ips[@]}"; do
+        ssh-keygen \
+          -R "${public_ip}" \
+        || true
+      done
+
+      success "Remote workspace '${project}' has been cleaned up"
     done
+
+    # ### Teardown the Workspace on the K8s Cluster
+    # declare \
+    #   remote_project="${args[1]}"
+    
+    # # Get the path of the url & replace "/" with "-"
+    # project_slug="${remote_project}"
+    # project_slug="${project_slug#*:}"
+    # project_slug="${project_slug%.*}"
+    # project_slug="${project_slug//\//\-}"
+    # trace "${project_slug}"
+    # test -n "${project_slug}"
+
+    # declare \
+    #   namespace="${project_slug}" \
+    #   release_name="${project_slug}"
+
+    # info "Retrieve the LoadBalancer IP"
+    # declare -a public_ip
+    # public_ip=("$(${kubectl} -n "${namespace}" get service "${release_name}-workspace-ssh-svc" -o json | jq -r '.status.loadBalancer.ingress[].ip')")
+    # trace "public_ip=[$(printf "'%s', " "${public_ip[@]}")]"
+    # test "${#public_ip[@]}" -gt 0
+
+
+    # info "Uninstall Release ${release_name}"
+    # helm uninstall \
+    #   "${release_name}" \
+    #   --namespace "${namespace}" || true
+
+    # info "Removing Old State Files"
+    # rm \
+    #   "${WORKDIR}/.ssh/config.d/${release_name}" \
+    #   "${WORKDIR}/.cache/${release_name}.code-workspace" \
+    # || true
+
+    # info "Clean Up Known Hosts"
+    # for pub_ip in "${public_ip[@]}"; do
+    #   ssh-keygen \
+    #     -R "${pub_ip}" \
+    #   || true
+    # done
     ;;
   "list" )
     ### List all of the currently available remote workspaces
